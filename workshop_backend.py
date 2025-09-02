@@ -18,29 +18,34 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 import httpx
 
-# ===================== SETTINGS (FILL THESE) =====================
-DATABASE_URL = "postgresql://postgres:41421041.exe@127.0.0.1:5432/workshop_db"
+# ===================== SETTINGS =====================
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:41421041.exe@127.0.0.1:5432/workshop_db")
 
 # Public base URL of THIS backend so recipients can open the QR image link in WhatsApp/email
-# In production: set your public domain/IP; localhost links won't open on other phones.
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
 
 # Concurrency cap so providers aren't throttled
-SEND_CONCURRENCY = 10
+SEND_CONCURRENCY = int(os.getenv("SEND_CONCURRENCY", "10"))
 
 # --- Brevo (Sendinblue) for email ---
-BREVO_API_KEY   = os.getenv("BREVO_API_KEY", "")                 # <-- PUT YOUR KEY
-EMAIL_FROM      = os.getenv("EMAIL_FROM", "pankaj@bcoachindia.com") # <-- VERIFIED SENDER in Brevo
+BREVO_API_KEY   = os.getenv("BREVO_API_KEY", "REMOVED")  # set your xkeysib-... key
+EMAIL_FROM      = os.getenv("EMAIL_FROM", "pankaj@bcoachindia.com")  # must be verified sender/domain in Brevo
 EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Workshop Team")
 
 # --- WATI for WhatsApp ---
-# IMPORTANT: Base must be ONLY the tenant host (and tenant path if WATI gave you one), e.g.:
-#   "https://app.wati.io"   or   "https://live-mt-server.wati.io/424907"
-WATI_BASE_URL             = os.getenv("WATI_BASE_URL", "")
-WATI_API_KEY              = os.getenv("WATI_API_KEY", "")  # token string; with or without "Bearer " is fine
-WATI_TEMPLATE_NAME        = os.getenv("WATI_TEMPLATE_NAME", "your_qr_code")        # your approved template
-WATI_ENTRY_TEMPLATE_NAME  = os.getenv("WATI_ENTRY_TEMPLATE_NAME", "your_entry_pass")  # approved entry template
-WATI_DEFAULT_COUNTRY_CODE = os.getenv("WATI_DEFAULT_COUNTRY_CODE", "91")  # prepend for 10-digit numbers
+# IMPORTANT: Base must be ONLY the tenant host, e.g. "https://live-mt-server.wati.io/424907" (no trailing /api here)
+WATI_BASE_URL             = os.getenv("WATI_BASE_URL", "https://live-mt-server.wati.io/424907").rstrip("/")
+# We accept either WATI_API_TOKEN or WATI_API_KEY
+WATI_API_TOKEN            = (os.getenv("WATI_API_TOKEN") or os.getenv("WATI_API_KEY") or "REMOVED").strip()
+# Your approved template names
+WATI_TEMPLATE_NAME_QR     = os.getenv("WATI_TEMPLATE_NAME_QR", os.getenv("WATI_TEMPLATE_NAME", "your_qr_code"))
+WATI_TEMPLATE_NAME_ENTRY  = os.getenv("WATI_TEMPLATE_NAME_ENTRY", "your_entry_pass")
+# The broadcast name you use in WATI UI (support suggested "utility")
+WATI_BROADCAST_NAME       = os.getenv("WATI_BROADCAST_NAME", "utility")
+# Your sender / channel number as WATI expects (e.g., 918882918484)
+WATI_CHANNEL_NUMBER       = os.getenv("WATI_CHANNEL_NUMBER", "918882918484")
+# Default country code to auto-prefix 10-digit numbers
+WATI_DEFAULT_COUNTRY_CODE = os.getenv("WATI_DEFAULT_COUNTRY_CODE", "91")
 
 # One global async semaphore for all outbound sends
 SEND_SEMAPHORE = asyncio.BoundedSemaphore(SEND_CONCURRENCY)
@@ -99,15 +104,19 @@ def _normalize_phone(mobile: str) -> str:
     return digits
 
 def _bearer(token: str) -> str:
-    """Ensure Authorization header is in Bearer format whether token has prefix or not."""
+    """Ensure Authorization header is Bearer ... even if env var is raw token."""
     t = (token or "").strip()
     return t if t.lower().startswith("bearer ") else f"Bearer {t}"
 
 async def _send_brevo_email(*, to_email: str, subject: str, text: str, attachments: Optional[List[dict]] = None) -> bool:
-    """Send email via Brevo. attachments: list of {content: base64, name: filename}"""
+    """
+    Send email via Brevo.
+    attachments: list of {"content": <base64 string>, "name": "filename.ext"}
+    """
     if not BREVO_API_KEY:
-        print("[Brevo] SKIP: missing BREVO_API_KEY")
+        print("[Brevo] missing API key")
         return False
+
     headers = {
         "api-key": BREVO_API_KEY,
         "accept": "application/json",
@@ -121,86 +130,127 @@ async def _send_brevo_email(*, to_email: str, subject: str, text: str, attachmen
     }
     if attachments:
         payload["attachment"] = attachments
+
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.post("https://api.brevo.com/v3/smtp/email", headers=headers, json=payload)
-        print("[Brevo] HTTP:", r.status_code, "body:", r.text[:300])
+        print("[Brevo] HTTP:", r.status_code, "body:", r.text)
         r.raise_for_status()
     return True
 
-async def _send_wati_template(*, phone: str, template_name: str, params: List[str], broadcast_name: str = "Workshop") -> bool:
+async def _send_wati_template(
+    *, phone: str, template_name: str, params_obj: List[dict],
+    broadcast_name: Optional[str] = None, channel_number: Optional[str] = None
+) -> bool:
     """
-    WATI template send with:
-      1) /api/v2/sendTemplateMessage?whatsappNumber=<digits>  (body: { template_name, broadcast_name, parameters })
-      2) /api/v1/sendTemplateMessage  (body: { template_name, broadcast_name, parameters, whatsappNumber })
-      3) /api/v1/sendTemplateMessages (bulk) (body: { template_name, broadcast_name, parameters, whatsappNumbers: [] })
-    Params MUST be a simple array of strings in the same order as your template placeholders.
+    Send a WATI template using the exact shape your tenant expects:
+    - parameters: [{ "name": "...", "value": "..." }, ...]
+    - channel_number in JSON body (if your tenant requires it)
+    - v2: recipient number in query string: ?whatsappNumber=<digits>
+    Falls back to v1 and bulk variants.
+    Return True only if API returns {"result": true}.
     """
-    if not WATI_API_KEY or not WATI_BASE_URL or not template_name:
-        print("[WATI] SKIP: missing key/base/template")
+    if not WATI_API_TOKEN or not WATI_BASE_URL or not template_name:
+        print("[WATI] missing base/token/template; skipping")
         return False
 
     base = WATI_BASE_URL.rstrip("/")
     headers = {
-        "Authorization": _bearer(WATI_API_KEY),
+        "Authorization": _bearer(WATI_API_TOKEN),
         "Content-Type": "application/json",
     }
+    bname = broadcast_name or WATI_BROADCAST_NAME or "utility"
+    chan  = channel_number or WATI_CHANNEL_NUMBER
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        # Attempt 1: v2 (with whatsappNumber in query string)
-        try:
-            url1 = f"{base}/api/v2/sendTemplateMessage?whatsappNumber={phone}"
-            payload1 = {
-                "template_name": template_name,
-                "broadcast_name": broadcast_name,
-                "parameters": params,  # array of strings, e.g. ["John","Batch A","https://.../qr.png"]
-            }
-            r1 = await client.post(url1, headers=headers, json=payload1)
-            print(f"[WATI] v2 -> {r1.status_code} {r1.text[:200]}")
-            if r1.status_code == 200:
-                j = r1.json()
+    # v2 — number in query string
+    try:
+        url = f"{base}/api/v2/sendTemplateMessage?whatsappNumber={phone}"
+        payload = {
+            "template_name": template_name,
+            "broadcast_name": bname,
+            "parameters": params_obj,  # array of {name,value}
+        }
+        if chan:
+            payload["channel_number"] = chan
+
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(url, headers=headers, json=payload)
+            print(f"[WATI] v2 -> {r.status_code} {r.text[:200]}")
+            if r.status_code == 200:
+                j = r.json()
                 if isinstance(j, dict) and j.get("result") is True:
                     return True
-        except Exception as e:
-            print("[WATI] v2 error:", e)
+    except Exception as e:
+        print("[WATI] v2 error:", e)
 
-        # Attempt 2: v1 single (whatsappNumber in body)
-        try:
-            url2 = f"{base}/api/v1/sendTemplateMessage"
-            payload2 = {
-                "template_name": template_name,
-                "broadcast_name": broadcast_name,
-                "parameters": params,
-                "whatsappNumber": phone,
-            }
-            r2 = await client.post(url2, headers=headers, json=payload2)
-            print(f"[WATI] v1 -> {r2.status_code} {r2.text[:200]}")
-            if r2.status_code == 200:
-                j = r2.json()
+    # v1 — number in body
+    try:
+        url = f"{base}/api/v1/sendTemplateMessage"
+        payload = {
+            "whatsappNumber": phone,
+            "template_name": template_name,
+            "broadcast_name": bname,
+            "parameters": params_obj,
+        }
+        if chan:
+            payload["channel_number"] = chan
+
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(url, headers=headers, json=payload)
+            print(f"[WATI] v1 -> {r.status_code} {r.text[:200]}")
+            if r.status_code == 200:
+                j = r.json()
                 if isinstance(j, dict) and j.get("result") is True:
                     return True
-        except Exception as e:
-            print("[WATI] v1 error:", e)
+    except Exception as e:
+        print("[WATI] v1 error:", e)
 
-        # Attempt 3: bulk (plural)
-        try:
-            url3 = f"{base}/api/v1/sendTemplateMessages"
-            payload3 = {
-                "template_name": template_name,
-                "broadcast_name": broadcast_name,
-                "parameters": params,
-                "whatsappNumbers": [phone],
-            }
-            r3 = await client.post(url3, headers=headers, json=payload3)
-            print(f"[WATI] bulk -> {r3.status_code} {r3.text[:200]}")
-            if r3.status_code == 200:
-                j = r3.json()
+    # v1 bulk — whatsappNumbers
+    try:
+        url = f"{base}/api/v1/sendTemplateMessages"
+        payload = {
+            "whatsappNumbers": [phone],  # plural list
+            "template_name": template_name,
+            "broadcast_name": bname,
+            "parameters": params_obj,
+        }
+        if chan:
+            payload["channel_number"] = chan
+
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(url, headers=headers, json=payload)
+            print(f"[WATI] bulk -> {r.status_code} {r.text[:200]}")
+            if r.status_code == 200:
+                j = r.json()
                 if isinstance(j, dict) and j.get("result") is True:
                     return True
-        except Exception as e:
-            print("[WATI] bulk error:", e)
+    except Exception as e:
+        print("[WATI] bulk error:", e)
+
+    # some tenants use "receivers" instead of whatsappNumbers
+    try:
+        url = f"{base}/api/v1/sendTemplateMessages"
+        payload = {
+            "receivers": [phone],
+            "template_name": template_name,
+            "broadcast_name": bname,
+            "parameters": params_obj,
+        }
+        if chan:
+            payload["channel_number"] = chan
+
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(url, headers=headers, json=payload)
+            print(f"[WATI] bulk(receivers) -> {r.status_code} {r.text[:200]}")
+            if r.status_code == 200:
+                j = r.json()
+                if isinstance(j, dict) and j.get("result") is True:
+                    return True
+    except Exception as e:
+        print("[WATI] bulk(receivers) error:", e)
 
     return False
 
+# ===================== CORE DB OPS =====================
 async def create_attendee(attendee: Attendee):
     attendee_id = str(uuid.uuid4())
     qr_data = f"WORKSHOP_ATTENDEE:{attendee_id}"
@@ -250,6 +300,10 @@ async def _update_send_status(attendee_id: str, email_status: str, wa_status: st
 # ===================== SENDERS =====================
 # --- Send QR (Brevo + WATI) ---
 async def send_qr_code(attendee_id: str, attendee: Attendee, qr_code_base64: str) -> bool:
+    """
+    Sends QR via Brevo (email) + WATI (WhatsApp).
+    Status is recorded per attendee in DB.
+    """
     now_ts = datetime.now()
     email_ok = False
     wa_ok = False
@@ -268,40 +322,50 @@ async def send_qr_code(attendee_id: str, attendee: Attendee, qr_code_base64: str
         except Exception as e:
             last_err = f"{(last_err + ' | ') if last_err else ''}Brevo error: {e}"
 
-        # WHATSAPP (WATI)
+        # WHATSAPP (WATI) — your_qr_code: {{name}}, {{batch}}, {{qr_code}}
         try:
             phone = _normalize_phone(attendee.mobile)
-            if phone and WATI_TEMPLATE_NAME:
-                # your_qr_code template: Hi {{name}}, ... {{batch}} ... {{qr_code}}
+            if phone and WATI_TEMPLATE_NAME_QR:
                 qr_url = f"{PUBLIC_BASE_URL}/api/qr/{attendee_id}.png"
-                params = [attendee.name, attendee.batch, qr_url]  # ORDER MUST MATCH TEMPLATE
+                params_obj = [
+                    {"name": "name",    "value": attendee.name},
+                    {"name": "batch",   "value": attendee.batch},
+                    {"name": "qr_code", "value": qr_url},
+                ]
                 wa_ok = await _send_wati_template(
                     phone=phone,
-                    template_name=WATI_TEMPLATE_NAME,
-                    params=params,
-                    broadcast_name="Workshop QR"
+                    template_name=WATI_TEMPLATE_NAME_QR,
+                    params_obj=params_obj,
+                    broadcast_name=WATI_BROADCAST_NAME
                 )
+                if not wa_ok:
+                    last_err = (last_err + " | " if last_err else "") + "WATI QR send failed"
             else:
-                print("[WATI] SKIP: phone empty or template not set")
+                print("[WATI] phone empty or QR template not set")
         except Exception as e:
             last_err = f"{(last_err + ' | ') if last_err else ''}WATI error: {e}"
 
     # Statuses
     email_status = "sent" if (BREVO_API_KEY and email_ok) else ("failed" if BREVO_API_KEY else "pending")
-    wa_status    = "sent" if (WATI_API_KEY and wa_ok)       else ("failed" if WATI_API_KEY else "pending")
+    wa_status    = "sent" if (WATI_API_TOKEN and wa_ok)   else ("failed" if WATI_API_TOKEN else "pending")
 
     await _update_send_status(attendee_id, email_status, wa_status, now_ts, last_err)
     return email_ok and wa_ok
 
 # --- Send entry pass after scan ---
 async def send_entry_pass(attendee_row, entry_time: datetime):
+    """
+    On scan, send a confirmation:
+    - Email: simple text via Brevo
+    - WhatsApp: your_entry_pass with variables {name}, {batch}, {email}
+    """
     try:
         name = attendee_row["name"]
         email = attendee_row["email"]
         mobile = attendee_row["mobile"]
         batch = attendee_row["batch"]
 
-        # Email (Brevo) — includes date/time
+        # Email (Brevo)
         try:
             await _send_brevo_email(
                 to_email=email,
@@ -318,16 +382,20 @@ async def send_entry_pass(attendee_row, entry_time: datetime):
         except Exception as e:
             print("[Brevo][entry-pass] error:", e)
 
-        # WhatsApp (WATI) — your_entry_pass template: Hi {{name}} ... {{batch}} ... {{email}}
+        # WhatsApp (WATI) — your_entry_pass: {{name}}, {{batch}}, {{email}}
         try:
             phone = _normalize_phone(mobile)
-            if phone and WATI_ENTRY_TEMPLATE_NAME:
-                params = [name, batch, email]  # ORDER MUST MATCH TEMPLATE
+            if phone and WATI_TEMPLATE_NAME_ENTRY:
+                params_obj = [
+                    {"name": "name",  "value": name},
+                    {"name": "batch", "value": batch},
+                    {"name": "email", "value": email},
+                ]
                 ok = await _send_wati_template(
                     phone=phone,
-                    template_name=WATI_ENTRY_TEMPLATE_NAME,
-                    params=params,
-                    broadcast_name="Workshop Entry"
+                    template_name=WATI_TEMPLATE_NAME_ENTRY,
+                    params_obj=params_obj,
+                    broadcast_name=WATI_BROADCAST_NAME
                 )
                 print("[WATI] entry-pass", "sent" if ok else "failed")
             else:
@@ -448,7 +516,7 @@ async def upload_csv(file: UploadFile = File(...), token: str = Depends(verify_t
         return {"message": f"Successfully processed {len(created)} attendees from CSV",
                 "total_processed": len(created)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing CSV: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing CSV: {str(e)}")
 
 # Public PNG for WA / recipients (NO auth so links work in WhatsApp/email)
 @app.get("/api/qr/{attendee_id}.png")
