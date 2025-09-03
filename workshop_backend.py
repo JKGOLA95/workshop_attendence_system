@@ -18,6 +18,30 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 import httpx
 
+from dotenv import load_dotenv
+import os
+
+# Load .env file
+load_dotenv()
+
+# Access values
+DATABASE_URL = os.getenv("DATABASE_URL")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
+SEND_CONCURRENCY = int(os.getenv("SEND_CONCURRENCY"))
+
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+EMAIL_FROM = os.getenv("EMAIL_FROM")
+EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME")
+
+WATI_BASE_URL = os.getenv("WATI_BASE_URL")
+WATI_API_TOKEN  = os.getenv("WATI_API_TOKEN") 
+WATI_TEMPLATE_NAME_QR  = os.getenv("WATI_TEMPLATE_NAME_QR")
+WATI_TEMPLATE_NAME_ENTRY  = os.getenv("WATI_TEMPLATE_NAME_ENTRY")
+WATI_BROADCAST_NAME       = os.getenv("WATI_BROADCAST_NAME")
+WATI_CHANNEL_NUMBER       = os.getenv("WATI_CHANNEL_NUMBER")
+WATI_DEFAULT_COUNTRY_CODE = os.getenv("WATI_DEFAULT_COUNTRY_CODE")
+SEND_SEMAPHORE = asyncio.BoundedSemaphore(SEND_CONCURRENCY)
+'''
 # ===================== SETTINGS =====================
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:41421041.exe@127.0.0.1:5432/workshop_db")
 
@@ -49,6 +73,7 @@ WATI_DEFAULT_COUNTRY_CODE = os.getenv("WATI_DEFAULT_COUNTRY_CODE", "91")
 
 # One global async semaphore for all outbound sends
 SEND_SEMAPHORE = asyncio.BoundedSemaphore(SEND_CONCURRENCY)
+'''
 
 # ===================== MODELS =====================
 class Attendee(BaseModel):
