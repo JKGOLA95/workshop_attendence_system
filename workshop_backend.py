@@ -41,39 +41,6 @@ WATI_BROADCAST_NAME       = os.getenv("WATI_BROADCAST_NAME")
 WATI_CHANNEL_NUMBER       = os.getenv("WATI_CHANNEL_NUMBER")
 WATI_DEFAULT_COUNTRY_CODE = os.getenv("WATI_DEFAULT_COUNTRY_CODE")
 SEND_SEMAPHORE = asyncio.BoundedSemaphore(SEND_CONCURRENCY)
-'''
-# ===================== SETTINGS =====================
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:41421041.exe@127.0.0.1:5432/workshop_db")
-
-# Public base URL of THIS backend so recipients can open the QR image link in WhatsApp/email
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
-
-# Concurrency cap so providers aren't throttled
-SEND_CONCURRENCY = int(os.getenv("SEND_CONCURRENCY", "10"))
-
-# --- Brevo (Sendinblue) for email ---
-BREVO_API_KEY   = os.getenv("BREVO_API_KEY", "REMOVED")  # set your xkeysib-... key
-EMAIL_FROM      = os.getenv("EMAIL_FROM", "pankaj@bcoachindia.com")  # must be verified sender/domain in Brevo
-EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Workshop Team")
-
-# --- WATI for WhatsApp ---
-# IMPORTANT: Base must be ONLY the tenant host, e.g. "https://live-mt-server.wati.io/424907" (no trailing /api here)
-WATI_BASE_URL             = os.getenv("WATI_BASE_URL", "https://live-mt-server.wati.io/424907").rstrip("/")
-# We accept either WATI_API_TOKEN or WATI_API_KEY
-WATI_API_TOKEN            = (os.getenv("WATI_API_TOKEN") or os.getenv("WATI_API_KEY") or "REMOVED").strip()
-# Your approved template names
-WATI_TEMPLATE_NAME_QR     = os.getenv("WATI_TEMPLATE_NAME_QR", os.getenv("WATI_TEMPLATE_NAME", "your_qr_code"))
-WATI_TEMPLATE_NAME_ENTRY  = os.getenv("WATI_TEMPLATE_NAME_ENTRY", "your_entry_pass")
-# The broadcast name you use in WATI UI (support suggested "utility")
-WATI_BROADCAST_NAME       = os.getenv("WATI_BROADCAST_NAME", "utility")
-# Your sender / channel number as WATI expects (e.g., 918882918484)
-WATI_CHANNEL_NUMBER       = os.getenv("WATI_CHANNEL_NUMBER", "918882918484")
-# Default country code to auto-prefix 10-digit numbers
-WATI_DEFAULT_COUNTRY_CODE = os.getenv("WATI_DEFAULT_COUNTRY_CODE", "91")
-
-# One global async semaphore for all outbound sends
-SEND_SEMAPHORE = asyncio.BoundedSemaphore(SEND_CONCURRENCY)
-'''
 
 # ===================== MODELS =====================
 class Attendee(BaseModel):
