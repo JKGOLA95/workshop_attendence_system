@@ -42,6 +42,7 @@ WATI_CHANNEL_NUMBER       = os.getenv("WATI_CHANNEL_NUMBER")
 WATI_DEFAULT_COUNTRY_CODE = os.getenv("WATI_DEFAULT_COUNTRY_CODE")
 SEND_SEMAPHORE = asyncio.BoundedSemaphore(SEND_CONCURRENCY)
 
+
 # ===================== MODELS =====================
 class Attendee(BaseModel):
     name: str
