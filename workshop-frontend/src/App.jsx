@@ -10,9 +10,14 @@ import {
 } from "lucide-react";
 import "./App.css";
 
+// Get from .env
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+const AUTH_TOKEN   = import.meta.env.VITE_AUTH_TOKEN;
+
+
 // Configure these for your environment
-const API_BASE_URL = "http://localhost:8000/api";
-const AUTH_TOKEN = "your-jwt-token-here"; // replace or inject via env
+//const API_BASE_URL = "http://localhost:8000/api";
+//const AUTH_TOKEN = "your-jwt-token-here"; // replace or inject via env
 
 const App = () => {
   // UI state
