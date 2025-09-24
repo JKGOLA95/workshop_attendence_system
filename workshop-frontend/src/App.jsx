@@ -7,19 +7,37 @@ import {
   UserPlus,
   CheckCircle2,
   AlertCircle,
+  ClipboardList,
+  Plus,
+  Edit3,
+  Trash2,
+  Eye,
+  Settings,
+  Shield,
+  Activity,
+  Mail,
+  Phone,
+  Calendar,
+  TrendingUp,
 } from "lucide-react";
 import "./App.css";
 
-// Get from .env
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
-const AUTH_TOKEN   = import.meta.env.VITE_AUTH_TOKEN;
-
-
-// Configure these for your environment
-//const API_BASE_URL = "http://localhost:8000/api";
-//const AUTH_TOKEN = "your-jwt-token-here"; // replace or inject via env
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 const App = () => {
+  // Auth state
+  const [view, setView] = useState("home");
+  const [loginType, setLoginType] = useState(null);
+  const [role, setRole] = useState(null);
+  const [token, setToken] = useState(localStorage.getItem("token") || null);
+  const [staffInfo, setStaffInfo] = useState(
+    JSON.parse(localStorage.getItem("staffInfo") || "null")
+  );
+
+  // Login form state
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+
   // UI state
   const [activeTab, setActiveTab] = useState("dashboard");
   const [isLoading, setIsLoading] = useState(false);
@@ -27,8 +45,9 @@ const App = () => {
 
   // Dashboard state
   const [dashboardData, setDashboardData] = useState(null);
+  const [adminDashboard, setAdminDashboard] = useState(null);
 
-  // Registration form state
+  // Registration form
   const [formData, setFormData] = useState({
     name: "",
     email: "",
@@ -43,55 +62,163 @@ const App = () => {
   // Scanner state
   const [scannerActive, setScannerActive] = useState(false);
   const [lastScan, setLastScan] = useState(null);
-  const scannerRef = useRef(null); // holds Html5QrcodeScanner instance
+  const scannerRef = useRef(null);
+
+  // Admin state
+  const [staffList, setStaffList] = useState([]);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [showStaffForm, setShowStaffForm] = useState(false);
+  const [editingStaff, setEditingStaff] = useState(null);
+  const [staffFormData, setStaffFormData] = useState({
+    name: "",
+    email: "",
+    password: "",
+    role: "staff"
+  });
+
+  // Auto-login check
+  useEffect(() => {
+    console.log("Checking auto-login:", { token, staffInfo });
+    if (token && staffInfo) {
+      setRole(staffInfo.role);
+      setView(staffInfo.role === "admin" ? "admin" : "staff");
+    }
+  }, []);
 
   // Helpers
   const showNotification = (message, type = "success") => {
+    console.log("Notification:", message, type);
     setNotification({ message, type });
-    window.setTimeout(() => setNotification(null), 4000);
+    setTimeout(() => setNotification(null), 4000);
   };
 
-  // API call helper (adds Authorization header only if you set AUTH_TOKEN)
   const apiCall = async (endpoint, options = {}) => {
+    // FIXED: Use token directly without modification
     const headers = {
-      "Content-Type": "application/json",
-      ...(AUTH_TOKEN ? { Authorization: `Bearer ${AUTH_TOKEN}` } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     };
-
-    const resp = await fetch(`${API_BASE_URL}${endpoint}`, { ...options, headers });
+    
+    console.log(`API Call: ${API_BASE_URL}/api${endpoint}`, { 
+      token: token?.substring(0, 20) + "...", 
+      endpoint,
+      method: options.method || "GET"
+    });
+    
+    const resp = await fetch(`${API_BASE_URL}/api${endpoint}`, {
+      ...options,
+      headers,
+    });
+    
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
-      throw new Error(`HTTP ${resp.status} ${resp.statusText} ${text}`.trim());
+      console.error(`API Error: ${resp.status} ${text}`);
+      throw new Error(`HTTP ${resp.status}: ${text || resp.statusText}`);
     }
+    
     const ct = resp.headers.get("content-type") || "";
     return ct.includes("application/json") ? resp.json() : null;
   };
 
-  // Dashboard loader
+  // Dashboard
   const loadDashboard = async () => {
     try {
       setIsLoading(true);
       const data = await apiCall("/attendance/dashboard");
       setDashboardData(data);
-    } catch (e) {
-      console.error(e);
-      setDashboardData(null);
+    } catch (err) {
+      console.error("Dashboard error:", err);
       showNotification("Failed to load dashboard", "error");
     } finally {
       setIsLoading(false);
     }
   };
 
-  useEffect(() => {
-    if (activeTab === "dashboard") loadDashboard();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
-
-  // Form handlers
-  const handleInputChange = (field, value) => {
-    setFormData((prev) => ({ ...prev, [field]: value }));
+  const loadAdminDashboard = async () => {
+    try {
+      setIsLoading(true);
+      const data = await apiCall("/admin/dashboard");
+      setAdminDashboard(data);
+    } catch (err) {
+      console.error("Admin dashboard error:", err);
+      showNotification("Failed to load admin dashboard", "error");
+    } finally {
+      setIsLoading(false);
+    }
   };
+
+  useEffect(() => {
+    if (activeTab === "dashboard") {
+      if (view === "admin") {
+        loadAdminDashboard();
+        loadDashboard();
+      } else if (view === "staff") {
+        loadDashboard();
+      }
+    }
+  }, [activeTab, view]);
+
+  // ---- LOGIN ----
+  const handleLogin = async (email, password) => {
+    console.log("Login attempt:", { email, loginType });
+    setIsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/staff/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error("Login error response:", errorText);
+        throw new Error(`Login failed: ${errorText}`);
+      }
+      
+      const data = await res.json();
+      console.log("Login success:", data);
+      
+      setToken(data.token);
+      setRole(data.role);
+      setStaffInfo(data);
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("staffInfo", JSON.stringify(data));
+      
+      // Check if user role matches the intended login type
+      if (loginType === "admin" && data.role !== "admin") {
+        throw new Error("You don't have admin privileges. Please use Staff Login.");
+      }
+      
+      setView(data.role === "admin" ? "admin" : "staff");
+      showNotification(`Welcome ${data.name}! Logged in as ${data.role}`);
+      setLoginEmail("");
+      setLoginPassword("");
+      
+    } catch (err) {
+      console.error("Login error:", err);
+      showNotification(err.message || "Login failed. Please check your credentials.", "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    setToken(null);
+    setRole(null);
+    setStaffInfo(null);
+    setLoginType(null);
+    localStorage.removeItem("token");
+    localStorage.removeItem("staffInfo");
+    setView("home");
+    setActiveTab("dashboard");
+    setLoginEmail("");
+    setLoginPassword("");
+    showNotification("Logged out successfully");
+  };
+
+  // ---- Registration ----
+  const handleInputChange = (field, value) =>
+    setFormData((prev) => ({ ...prev, [field]: value }));
 
   const resetForm = () =>
     setFormData({ name: "", email: "", mobile: "", batch: "" });
@@ -99,191 +226,457 @@ const App = () => {
   const handleRegistration = async () => {
     const { name, email, mobile, batch } = formData;
     if (!name || !email || !mobile || !batch) {
-      showNotification("Please fill in all fields", "error");
+      showNotification("Please fill all fields", "error");
       return;
     }
-
     setIsLoading(true);
     try {
       await apiCall("/register/single", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData),
       });
-      showNotification(`${name} registered successfully! QR dispatch queued.`);
+      showNotification("Attendee registered successfully!");
       resetForm();
       await loadDashboard();
-    } catch (e) {
-      console.error(e);
-      showNotification("Registration failed. Please check backend logs.", "error");
+    } catch (err) {
+      console.error("Registration error:", err);
+      showNotification("Registration failed", "error");
     } finally {
       setIsLoading(false);
     }
   };
 
-  // CSV handlers
+  // ---- CSV Upload ----
   const handleCsvUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     setCsvFile(file);
     try {
       const text = await file.text();
       const rows = text
         .split(/\r?\n/)
-        .map((row) => row.split(",").map((cell) => cell.trim()))
-        .filter((row) => row.length > 1 && row.some((cell) => cell !== ""));
-
-      setCsvPreview(rows.slice(0, 4)); // header + first 3 rows
-    } catch (err) {
-      console.error(err);
-      showNotification("Error reading CSV file", "error");
-      setCsvFile(null);
-      setCsvPreview([]);
+        .map((row) => row.split(","))
+        .filter((r) => r.length > 1);
+      setCsvPreview(rows.slice(0, 4));
+    } catch {
+      showNotification("Error reading CSV", "error");
     }
   };
 
   const processCsv = async () => {
     if (!csvFile) return;
-
     setIsLoading(true);
     const form = new FormData();
     form.append("file", csvFile);
-
     try {
-      const response = await fetch(`${API_BASE_URL}/upload/csv`, {
+      const resp = await fetch(`${API_BASE_URL}/api/upload/csv`, {
         method: "POST",
-        headers: AUTH_TOKEN ? { Authorization: `Bearer ${AUTH_TOKEN}` } : {},
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: form,
       });
-
-      if (!response.ok) throw new Error("Upload failed");
-      const result = await response.json();
-      const processed = result.total_processed ?? Math.max(0, csvPreview.length - 1);
-      showNotification(`${processed} attendees processed successfully!`);
+      if (!resp.ok) throw new Error("Upload failed");
+      showNotification("CSV processed successfully!");
       setCsvFile(null);
       setCsvPreview([]);
       await loadDashboard();
     } catch (err) {
-      console.error(err);
-      showNotification("CSV processing failed. Please check format.", "error");
+      console.error("CSV error:", err);
+      showNotification("CSV upload failed", "error");
     } finally {
       setIsLoading(false);
     }
   };
 
-  // ---- QR Scanner (with live camera frame) ----
-  // Uses html5-qrcode if available. Install: `npm i html5-qrcode`
+  // ---- QR Scanner ----
   const startScanner = async () => {
     setScannerActive(true);
-    // Wait for the #qr-reader box to exist in the DOM
     setTimeout(async () => {
       try {
         const mod = await import("html5-qrcode");
         const Html5QrcodeScanner = mod.Html5QrcodeScanner;
-        if (!Html5QrcodeScanner) {
-          showNotification("Scanner lib not installed. Showing placeholder.", "info");
-          return;
-        }
-
-        // Create the scanner instance and render into #qr-reader
-        const scanner = new Html5QrcodeScanner("qr-reader", { fps: 10, qrbox: 250 }, false);
+        const scanner = new Html5QrcodeScanner("qr-reader", { 
+          fps: 10, 
+          qrbox: 250,
+          rememberLastUsedCamera: true
+        });
         scanner.render(
           async (decodedText) => {
             try {
-              await handleQrScan(decodedText);
+              const result = await apiCall("/scan", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ qr_code: decodedText }),
+              });
+              setLastScan(result.attendee);
+              showNotification(`Attendance marked for ${result.attendee.name}!`);
+              await loadDashboard();
+            } catch (err) {
+              console.error("Scan error:", err);
+              showNotification("Invalid QR code or already scanned", "error");
             } finally {
-              // stop scanning after a successful read
-              try { await scanner.clear(); } catch {}
-              scannerRef.current = null;
+              try {
+                await scanner.clear();
+              } catch {}
               setScannerActive(false);
             }
           },
-          // per-frame errors (ignore)
           () => {}
         );
-
         scannerRef.current = scanner;
       } catch (err) {
-        console.error(err);
-        showNotification("Camera access denied or scanner init failed.", "error");
+        console.error("Scanner error:", err);
+        showNotification("Scanner initialization failed", "error");
         setScannerActive(false);
       }
-    }, 0);
+    }, 100);
   };
 
-  const stopScanner = async () => {
+  // ---- ADMIN FUNCTIONS ----
+  const loadStaffList = async () => {
+    console.log("Loading staff list...");
     try {
-      if (scannerRef.current?.clear) await scannerRef.current.clear();
-    } catch {}
-    scannerRef.current = null;
-    setScannerActive(false);
-  };
-
-  const handleQrScan = async (qrData) => {
-    try {
-      const response = await apiCall("/scan", {
-        method: "POST",
-        body: JSON.stringify({ qr_code: qrData }),
-      });
-      const attendee = response?.attendee || {};
-      setLastScan({
-        name: attendee.name || "",
-        email: attendee.email || "",
-        batch: attendee.batch || "",
-        time: attendee.entry_time ? new Date(attendee.entry_time).toLocaleString() : "",
-      });
-      showNotification(`✅ ${attendee.name || "Attendee"} - Attendance marked!`);
-    } catch (e) {
-      console.error(e);
-      showNotification("QR code scan failed.", "error");
+      setIsLoading(true);
+      const data = await apiCall("/admin/staff");
+      console.log("Staff list loaded:", data);
+      setStaffList(data);
+    } catch (err) {
+      console.error("Staff list error:", err);
+      showNotification(`Failed to load staff list: ${err.message}`, "error");
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const tabs = [
-    { id: "dashboard", label: "Dashboard", icon: BarChart3 },
-    { id: "register", label: "Register", icon: UserPlus },
-    { id: "upload", label: "Bulk Upload", icon: Upload },
-    { id: "scanner", label: "Scanner", icon: Camera },
-  ];
+  const loadAuditLogs = async () => {
+    try {
+      setIsLoading(true);
+      const data = await apiCall("/admin/audit-logs?limit=50");
+      setAuditLogs(data.logs || []);
+    } catch (err) {
+      console.error("Audit logs error:", err);
+      showNotification("Failed to load audit logs", "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-  return (
-    <div className="app-root">
-      <header className="app-header">
-        <div className="container">
+  useEffect(() => {
+    console.log("Effect triggered:", { view, activeTab });
+    if (view === "admin") {
+      if (activeTab === "staff") {
+        console.log("Loading staff list from effect...");
+        loadStaffList();
+      }
+      if (activeTab === "logs") loadAuditLogs();
+    }
+  }, [activeTab, view]);
+
+  const handleStaffFormChange = (field, value) => {
+    setStaffFormData(prev => ({ ...prev, [field]: value }));
+  };
+
+  const resetStaffForm = () => {
+    setStaffFormData({ name: "", email: "", password: "", role: "staff" });
+    setEditingStaff(null);
+    setShowStaffForm(false);
+  };
+
+  const handleCreateStaff = async () => {
+    const { name, email, password, role } = staffFormData;
+    if (!name || !email || !password) {
+      showNotification("Please fill all required fields", "error");
+      return;
+    }
+    
+    console.log("Creating staff with data:", { name, email, role });
+    setIsLoading(true);
+    
+    try {
+      const result = await apiCall("/admin/staff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, password, role }),
+      });
+      
+      console.log("Staff creation result:", result);
+      showNotification("Staff member created successfully!");
+      resetStaffForm();
+      await loadStaffList();
+      
+    } catch (err) {
+      console.error("Create staff error:", err);
+      showNotification(`Failed to create staff member: ${err.message}`, "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleUpdateStaff = async () => {
+    if (!editingStaff) return;
+    setIsLoading(true);
+    try {
+      const updateData = {};
+      if (staffFormData.name) updateData.name = staffFormData.name;
+      if (staffFormData.email) updateData.email = staffFormData.email;
+      if (staffFormData.password) updateData.password = staffFormData.password;
+      if (staffFormData.role) updateData.role = staffFormData.role;
+
+      await apiCall(`/admin/staff/${editingStaff.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updateData),
+      });
+      showNotification("Staff member updated successfully!");
+      resetStaffForm();
+      await loadStaffList();
+    } catch (err) {
+      console.error("Update staff error:", err);
+      showNotification(`Failed to update staff member: ${err.message}`, "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteStaff = async (staffId, permanent = false) => {
+    if (!confirm(`Are you sure you want to ${permanent ? 'permanently delete' : 'deactivate'} this staff member?`)) return;
+    
+    console.log("Deleting staff:", staffId);
+    setIsLoading(true);
+    
+    try {
+      await apiCall(`/admin/staff/${staffId}?permanent=${permanent}`, {
+        method: "DELETE",
+      });
+      showNotification(`Staff member ${permanent ? 'deleted' : 'deactivated'} successfully!`);
+      await loadStaffList();
+    } catch (err) {
+      console.error("Delete staff error:", err);
+      showNotification(`Failed to delete staff member: ${err.message}`, "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const startEditStaff = (staff) => {
+    setEditingStaff(staff);
+    setStaffFormData({
+      name: staff.name,
+      email: staff.email,
+      password: "",
+      role: staff.role
+    });
+    setShowStaffForm(true);
+  };
+
+  // ---- RENDER ----
+  console.log("Current view:", view, "Active tab:", activeTab);
+  /*
+
+  if (view === "home") {
+    return (
+      <div className="center-block">
+        <div className="empty-card">
           <h1 className="brand">Workshop Attendance System</h1>
-        </div>
-      </header>
-
-      {/* Responsive, horizontally scrollable tabs */}
-      <div className="container tabs-row">
-        <div className="tabs no-scrollbar">
-          {tabs.map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`tab-button ${isActive ? "active" : ""}`}
-              >
-                <Icon className="icon" />
-                <span>{tab.label}</span>
-              </button>
-            );
-          })}
+          <p className="muted">Choose your login type</p>
+          <div className="form-actions">
+            <button 
+              className="btn-primary" 
+              onClick={() => {
+                console.log("Admin login clicked");
+                setLoginType("admin");
+                setView("login-admin");
+              }}
+            >
+              <Shield className="icon" />
+              Admin Login
+            </button>
+            <button 
+              className="btn-secondary" 
+              onClick={() => {
+                console.log("Staff login clicked");
+                setLoginType("staff");
+                setView("login-staff");
+              }}
+            >
+              <Users className="icon" />
+              Staff Login
+            </button>
+          </div>
         </div>
       </div>
+    );
+  }
+    */
 
-      <main className="container main-content">
-        {activeTab === "dashboard" && (
-          <section>
-            {isLoading ? (
-              <div className="center-block">
-                <div className="spinner" />
-                <p>Loading dashboard...</p>
-              </div>
-            ) : dashboardData ? (
-              <>
+  if (view === "home") {
+  return (
+    <div>
+      {/* 🔹 Full-width banner at the top */}
+      <div style={{ width: "100%", marginBottom: "20px" }}>
+        <img
+          src="/Website Banner-01_0.jpg"   // ✅ correct reference
+          alt="Workshop Banner"
+          style={{
+            display: "block",
+            width: "100%",     // always fit to screen width
+            height: "auto",    // keep aspect ratio
+            maxWidth: "100%",
+            
+          }}
+        />
+      </div>
+
+      {/* 🔹 Centered login card below the banner */}
+      <div className="center-block">
+        <div className="empty-card">
+          <h1 className="brand">Workshop Attendance System</h1>
+          <p className="muted">Choose your login type</p>
+          <div className="form-actions">
+            <button
+              className="btn-primary"
+              onClick={() => {
+                setLoginType("admin");
+                setView("login-admin");
+              }}
+            >
+              <Shield className="icon" />
+              Admin Login
+            </button>
+            <button
+              className="btn-secondary"
+              onClick={() => {
+                setLoginType("staff");
+                setView("login-staff");
+              }}
+            >
+              <Users className="icon" />
+              Staff Login
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+
+  if (view === "login-admin" || view === "login-staff") {
+    return (
+      <div className="center-block">
+        <div className="empty-card">
+          <h2>{view === "login-admin" ? "Admin Login" : "Staff Login"}</h2>
+          <p className="muted">
+            {view === "login-admin" 
+              ? "Enter admin credentials to access system management" 
+              : "Enter staff credentials to access attendance features"}
+          </p>
+          <div className="form">
+            <div>
+              <label>Email Address</label>
+              <input 
+                type="email" 
+                value={loginEmail} 
+                onChange={(e) => setLoginEmail(e.target.value)}
+                placeholder="Enter your email"
+                disabled={isLoading}
+              />
+            </div>
+            <div>
+              <label>Password</label>
+              <input 
+                type="password" 
+                value={loginPassword} 
+                onChange={(e) => setLoginPassword(e.target.value)}
+                placeholder="Enter your password"
+                disabled={isLoading}
+                onKeyPress={(e) => e.key === 'Enter' && handleLogin(loginEmail, loginPassword)}
+              />
+            </div>
+            <div className="form-actions">
+              <button
+                className="btn-primary"
+                disabled={isLoading || !loginEmail || !loginPassword}
+                onClick={() => handleLogin(loginEmail, loginPassword)}
+              >
+                {isLoading ? "Logging in..." : "Login"}
+              </button>
+              <button 
+                className="btn-secondary" 
+                onClick={() => {
+                  console.log("Going back to home");
+                  setView("home");
+                  setLoginType(null);
+                  setLoginEmail("");
+                  setLoginPassword("");
+                }}
+              >
+                Back
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === "admin" || view === "staff") {
+    const tabs =
+      view === "admin"
+        ? [
+            { id: "dashboard", label: "Dashboard", icon: BarChart3 },
+            { id: "staff", label: "Staff Management", icon: Users },
+            { id: "logs", label: "Audit Logs", icon: ClipboardList },
+          ]
+        : [
+            { id: "dashboard", label: "Dashboard", icon: BarChart3 },
+            { id: "register", label: "Register", icon: UserPlus },
+            { id: "upload", label: "Bulk Upload", icon: Upload },
+            { id: "scanner", label: "Scanner", icon: Camera },
+          ];
+
+    return (
+      <div className="app-root">
+        <header className="app-header">
+          <div className="container flex-between">
+            <h1 className="brand">Workshop Attendance</h1>
+            <div className="flex-between" style={{gap: '12px'}}>
+              <span className="muted">{staffInfo?.name} ({staffInfo?.role})</span>
+              <button className="btn-secondary" onClick={handleLogout}>
+                Logout
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <div className="container tabs-row">
+          <div className="tabs no-scrollbar">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => {
+                    console.log("Tab clicked:", tab.id);
+                    setActiveTab(tab.id);
+                  }}
+                  className={`tab-button ${activeTab === tab.id ? "active" : ""}`}
+                >
+                  <Icon className="icon" />
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <main className="container">
+          {/* DASHBOARD */}
+          {activeTab === "dashboard" && (
+            <div>
+              {/* Admin Dashboard */}
+              {view === "admin" && adminDashboard && (
                 <div className="grid-3">
                   <div className="card">
                     <div className="card-left">
@@ -291,40 +684,83 @@ const App = () => {
                         <Users />
                       </div>
                       <div>
-                        <p className="muted">Total Registered</p>
-                        <p className="big">{dashboardData.total_attendees ?? "-"}</p>
+                        <p className="big">{adminDashboard.staff_stats.total_staff}</p>
+                        <p className="muted">Total Staff</p>
+                        <p className="muted-light">{adminDashboard.staff_stats.active_staff} active</p>
                       </div>
                     </div>
                   </div>
+                  <div className="card">
+                    <div className="card-left">
+                      <div className="icon-wrap icon-green">
+                        <TrendingUp />
+                      </div>
+                      <div>
+                        <p className="big">{adminDashboard.communication_stats.email_sent}</p>
+                        <p className="muted">Emails Sent</p>
+                        <p className="muted-light">{adminDashboard.communication_stats.whatsapp_sent} WhatsApp</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="card">
+                    <div className="card-left">
+                      <div className="icon-wrap icon-purple">
+                        <Activity />
+                      </div>
+                      <div>
+                        <p className="big">{adminDashboard.attendee_stats.attendance_rate}%</p>
+                        <p className="muted">Attendance Rate</p>
+                        <p className="muted-light">{adminDashboard.attendee_stats.total_attended}/{adminDashboard.attendee_stats.total_registered}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
+              {/* Regular Dashboard */}
+              {dashboardData && (
+                <div className="grid-3">
+                  <div className="card">
+                    <div className="card-left">
+                      <div className="icon-wrap icon-blue">
+                        <Users />
+                      </div>
+                      <div>
+                        <p className="big">{dashboardData.total_attendees}</p>
+                        <p className="muted">Total Registered</p>
+                      </div>
+                    </div>
+                  </div>
                   <div className="card">
                     <div className="card-left">
                       <div className="icon-wrap icon-green">
                         <CheckCircle2 />
                       </div>
                       <div>
+                        <p className="big">{dashboardData.marked_attendance}</p>
                         <p className="muted">Attended</p>
-                        <p className="big">{dashboardData.marked_attendance ?? "-"}</p>
                       </div>
                     </div>
                   </div>
-
                   <div className="card">
                     <div className="card-left">
                       <div className="icon-wrap icon-purple">
                         <BarChart3 />
                       </div>
                       <div>
+                        <p className="big">{dashboardData.attendance_rate}%</p>
                         <p className="muted">Attendance Rate</p>
-                        <p className="big">{dashboardData.attendance_rate ?? "0"}%</p>
                       </div>
                     </div>
                   </div>
                 </div>
+              )}
 
+              {/* Batch-wise Table */}
+              {dashboardData?.batch_wise_data && dashboardData.batch_wise_data.length > 0 && (
                 <div className="table-card">
                   <div className="table-head">
-                    <h3>Batch-wise Attendance</h3>
+                    <h3 style={{ margin: 0 }}>Batch-wise Statistics</h3>
                   </div>
                   <div className="table-wrap">
                     <table className="att-table">
@@ -337,131 +773,110 @@ const App = () => {
                         </tr>
                       </thead>
                       <tbody>
-                        {dashboardData.batch_wise_data?.length ? (
-                          dashboardData.batch_wise_data.map((batch, index) => (
-                            <tr key={index}>
-                              <td>{batch.batch}</td>
-                              <td>{batch.total_registered}</td>
-                              <td>{batch.total_attended}</td>
-                              <td>
-                                {batch.total_registered > 0
-                                  ? Math.round((batch.total_attended / batch.total_registered) * 100)
-                                  : 0}
-                                %
-                              </td>
-                            </tr>
-                          ))
-                        ) : (
-                          <tr>
-                            <td colSpan={4} className="muted">
-                              No data
+                        {dashboardData.batch_wise_data.map((batch, idx) => (
+                          <tr key={idx}>
+                            <td><strong>{batch.batch}</strong></td>
+                            <td>{batch.total_registered}</td>
+                            <td>{batch.total_attended}</td>
+                            <td>
+                              {batch.total_registered > 0 
+                                ? Math.round((batch.total_attended / batch.total_registered) * 100) 
+                                : 0}%
                             </td>
                           </tr>
-                        )}
+                        ))}
                       </tbody>
                     </table>
                   </div>
                 </div>
-              </>
-            ) : (
-              <div className="center-block">
-                <div className="empty-card">
-                  <p>Failed to load dashboard data</p>
-                  <button className="btn-primary" onClick={loadDashboard}>
-                    Retry
-                  </button>
-                </div>
-              </div>
-            )}
-          </section>
-        )}
+              )}
+            </div>
+          )}
 
-        {activeTab === "register" && (
-          <section className="form-section">
+          {/* REGISTER - Only for Staff */}
+          {view === "staff" && activeTab === "register" && (
             <div className="card-panel">
               <h2>Register New Attendee</h2>
-
               <div className="form">
-                <label>Full Name</label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => handleInputChange("name", e.target.value)}
-                  placeholder="Enter full name"
-                />
-
-                <label>Email Address</label>
-                <input
-                  type="email"
-                  value={formData.email}
-                  onChange={(e) => handleInputChange("email", e.target.value)}
-                  placeholder="Enter email address"
-                />
-
-                <label>Mobile Number</label>
-                <input
-                  type="tel"
-                  value={formData.mobile}
-                  onChange={(e) => handleInputChange("mobile", e.target.value)}
-                  placeholder="Enter mobile number"
-                />
-
-                <label>Batch</label>
-                <select
-                  value={formData.batch}
-                  onChange={(e) => handleInputChange("batch", e.target.value)}
-                >
-                  <option value="">Select Batch</option>
-                  <option value="BATCH_MORNING_01">Morning Batch 1</option>
-                  <option value="BATCH_EVENING_01">Evening Batch 1</option>
-                  <option value="BATCH_WEEKEND_01">Weekend Batch</option>
-                </select>
-
+                <div>
+                  <label>Full Name</label>
+                  <input
+                    type="text"
+                    placeholder="Enter full name"
+                    value={formData.name}
+                    onChange={(e) => handleInputChange("name", e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label>Email Address</label>
+                  <input
+                    type="email"
+                    placeholder="Enter email address"
+                    value={formData.email}
+                    onChange={(e) => handleInputChange("email", e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label>Mobile Number</label>
+                  <input
+                    type="tel"
+                    placeholder="Enter mobile number"
+                    value={formData.mobile}
+                    onChange={(e) => handleInputChange("mobile", e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label>Batch/Group</label>
+                  <input
+                    type="text"
+                    placeholder="Enter batch or group name"
+                    value={formData.batch}
+                    onChange={(e) => handleInputChange("batch", e.target.value)}
+                  />
+                </div>
                 <div className="form-actions">
-                  <button
+                  <button 
+                    className="btn-primary" 
                     onClick={handleRegistration}
-                    className="btn-primary"
                     disabled={isLoading}
                   >
-                    {isLoading ? "Registering..." : "Register & Send QR"}
+                    {isLoading ? "Registering..." : "Register Attendee"}
                   </button>
-                  <button onClick={resetForm} className="btn-secondary">
-                    Clear
+                  <button className="btn-secondary" onClick={resetForm}>
+                    Clear Form
                   </button>
                 </div>
               </div>
             </div>
-          </section>
-        )}
+          )}
 
-        {activeTab === "upload" && (
-          <section>
-            <div className="info-box">
-              <div className="info-left">
-                <AlertCircle />
-              </div>
-              <div>
-                <p className="muted">
-                  <strong>CSV Format Required</strong>
-                </p>
-                <p className="muted">Columns: name, email, mobile, batch</p>
-              </div>
-            </div>
-
+          {/* BULK UPLOAD - Only for Staff */}
+          {view === "staff" && activeTab === "upload" && (
             <div className="card-panel">
-              <h2>Bulk Registration</h2>
-
+              <h2>Bulk Upload Attendees</h2>
+              <div className="info-box">
+                <div className="info-left">
+                  <AlertCircle />
+                </div>
+                <div>
+                  <p><strong>CSV Format Required:</strong></p>
+                  <p>Columns: name, email, mobile, batch (exact headers, lowercase)</p>
+                </div>
+              </div>
+              
               <div className="form">
-                <label>Choose CSV File</label>
-                <input type="file" accept=".csv" onChange={handleCsvUpload} />
-
+                <div>
+                  <label>Select CSV File</label>
+                  <input type="file" accept=".csv" onChange={handleCsvUpload} />
+                </div>
+                
                 {csvPreview.length > 0 && (
                   <div className="csv-preview">
-                    <h4>Preview (First rows)</h4>
+                    <h4>Preview:</h4>
                     <div className="csv-table-wrap">
                       <table className="csv-table">
                         <tbody>
-                          {csvPreview.slice(0, 4).map((row, i) => (
+                          {csvPreview.map((row, i) => (
                             <tr key={i} className={i === 0 ? "bold-row" : ""}>
                               {row.map((cell, j) => (
                                 <td key={j}>{cell}</td>
@@ -471,92 +886,339 @@ const App = () => {
                         </tbody>
                       </table>
                     </div>
-
-                    <button
-                      onClick={processCsv}
-                      className="btn-primary"
-                      disabled={isLoading}
-                    >
-                      {isLoading
-                        ? "Processing..."
-                        : `Process ${Math.max(0, csvPreview.length - 1)} Attendees`}
-                    </button>
+                    <div className="form-actions">
+                      <button 
+                        className="btn-primary" 
+                        onClick={processCsv}
+                        disabled={isLoading}
+                      >
+                        {isLoading ? "Processing..." : "Process CSV"}
+                      </button>
+                      <button className="btn-secondary" onClick={() => {
+                        setCsvFile(null);
+                        setCsvPreview([]);
+                      }}>
+                        Cancel
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
             </div>
-          </section>
-        )}
+          )}
 
-        {activeTab === "scanner" && (
-          <section className="form-section">
-            <div className="card-panel text-center">
+          {/* QR SCANNER - Only for Staff */}
+          {view === "staff" && activeTab === "scanner" && (
+            <div className="card-panel">
               <h2>QR Code Scanner</h2>
-
+              
               {!scannerActive ? (
-                <>
+                <div className="text-center">
                   <div className="scanner-icon">
-                    <Camera />
+                    <Camera size={32} />
                   </div>
-                  <p className="muted">Ready to scan QR codes</p>
-                  <button onClick={startScanner} className="btn-primary">
+                  <p>Click to start scanning QR codes</p>
+                  <button className="btn-primary" onClick={startScanner}>
                     Start Scanner
                   </button>
-                </>
+                </div>
               ) : (
-                <>
-                  {/* live camera frame renders here when html5-qrcode is installed */}
-                  <div id="qr-reader" className="qr-reader-box" />
-                  {/* fallback helper text */}
-                  <div className="scanner-box">
-                    <div className="scanner-target" />
-                    <p className="muted-light">Align the QR inside the frame…</p>
+                <div>
+                  <div id="qr-reader" className="qr-reader-box"></div>
+                  <div className="text-center">
+                    <p className="muted">Position QR code within the frame</p>
                   </div>
-                  <button onClick={stopScanner} className="btn-danger">
-                    Stop Scanner
-                  </button>
-                </>
+                </div>
+              )}
+
+              {lastScan && (
+                <div className="success-card card" style={{marginTop: '16px'}}>
+                  <div className="success-head">
+                    <CheckCircle2 size={20} style={{color: 'var(--accent-green)'}} />
+                    <strong>Last Successful Scan</strong>
+                  </div>
+                  <div className="last-scan">
+                    <p><strong>Name:</strong> {lastScan.name}</p>
+                    <p><strong>Batch:</strong> {lastScan.batch}</p>
+                    <p><strong>Time:</strong> {new Date(lastScan.entry_time).toLocaleString()}</p>
+                  </div>
+                </div>
               )}
             </div>
+          )}
 
-            {lastScan && (
-              <div className="card-panel success-card">
-                <div className="success-head">
-                  <CheckCircle2 />
-                  <h3>Last Scanned</h3>
+          {/* ADMIN: STAFF MANAGEMENT */}
+          {view === "admin" && activeTab === "staff" && (
+            <div>
+              <div className="card-panel">
+                <div className="flex-between">
+                  <h2>Staff Management</h2>
+                  <button 
+                    className="btn-primary"
+                    onClick={() => {
+                      console.log("Add Staff button clicked");
+                      setShowStaffForm(true);
+                    }}
+                  >
+                    <Plus className="icon" />
+                    Add New Staff
+                  </button>
                 </div>
-                <div className="last-scan">
-                  <p>
-                    <strong>Name:</strong> {lastScan.name}
-                  </p>
-                  <p>
-                    <strong>Email:</strong> {lastScan.email}
-                  </p>
-                  <p>
-                    <strong>Batch:</strong> {lastScan.batch}
-                  </p>
-                  <p>
-                    <strong>Time:</strong> {lastScan.time}
-                  </p>
+
+                {/* Create/Edit Staff Form */}
+                {showStaffForm && (
+                  <div className="form" style={{marginTop: '16px', padding: '20px', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0'}}>
+                    <h4 style={{margin: '0 0 16px 0', color: '#1e293b'}}>
+                      {editingStaff ? "Edit Staff Member" : "Create New Staff Member"}
+                    </h4>
+                    
+                    <div>
+                      <label>Full Name *</label>
+                      <input
+                        type="text"
+                        placeholder="Enter full name"
+                        value={staffFormData.name}
+                        onChange={(e) => handleStaffFormChange("name", e.target.value)}
+                        required
+                      />
+                    </div>
+                    
+                    <div>
+                      <label>Email Address *</label>
+                      <input
+                        type="email"
+                        placeholder="Enter email address"
+                        value={staffFormData.email}
+                        onChange={(e) => handleStaffFormChange("email", e.target.value)}
+                        required
+                      />
+                    </div>
+                    
+                    <div>
+                      <label>Password {editingStaff ? "(leave blank to keep current)" : "*"}</label>
+                      <input
+                        type="password"
+                        placeholder={editingStaff ? "Enter new password (optional)" : "Enter password"}
+                        value={staffFormData.password}
+                        onChange={(e) => handleStaffFormChange("password", e.target.value)}
+                        required={!editingStaff}
+                      />
+                    </div>
+                    
+                    <div>
+                      <label>Role *</label>
+                      <select
+                        value={staffFormData.role}
+                        onChange={(e) => handleStaffFormChange("role", e.target.value)}
+                        required
+                      >
+                        <option value="staff">Staff</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                    </div>
+                    
+                    <div className="form-actions">
+                      <button 
+                        className="btn-primary"
+                        onClick={() => {
+                          console.log("Form submit clicked", { editingStaff, staffFormData });
+                          editingStaff ? handleUpdateStaff() : handleCreateStaff();
+                        }}
+                        disabled={isLoading || !staffFormData.name || !staffFormData.email || (!editingStaff && !staffFormData.password)}
+                      >
+                        {isLoading ? "Saving..." : (editingStaff ? "Update Staff Member" : "Create Staff Member")}
+                      </button>
+                      <button 
+                        className="btn-secondary" 
+                        onClick={() => {
+                          console.log("Cancel clicked");
+                          resetStaffForm();
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Staff List Table */}
+              <div className="table-card">
+                <div className="table-head">
+                  <div className="flex-between">
+                    <h3 style={{ margin: 0 }}>All Staff Members</h3>
+                    <span className="muted">{staffList.length} total staff</span>
+                  </div>
+                </div>
+                <div className="table-wrap">
+                  {staffList.length > 0 ? (
+                    <table className="att-table">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Email</th>
+                          <th>Role</th>
+                          <th>Status</th>
+                          <th>Created Date</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {staffList.map((staff) => (
+                          <tr key={staff.id}>
+                            <td>
+                              <div>
+                                <strong>{staff.name}</strong>
+                                {staff.id === staffInfo?.staff_id && (
+                                  <span style={{color: 'var(--accent-blue)', fontSize: '12px'}}> (You)</span>
+                                )}
+                              </div>
+                            </td>
+                            <td>{staff.email}</td>
+                            <td>
+                              <span className={`role-badge ${staff.role}`}>
+                                {staff.role.toUpperCase()}
+                              </span>
+                            </td>
+                            <td>
+                              <span className={`status-badge ${staff.is_active ? 'active' : 'inactive'}`}>
+                                {staff.is_active ? 'Active' : 'Inactive'}
+                              </span>
+                            </td>
+                            <td>{new Date(staff.created_at).toLocaleDateString('en-US', {
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric'
+                            })}</td>
+                            <td>
+                              <div className="action-buttons">
+                                <button
+                                  className="btn-icon"
+                                  onClick={() => {
+                                    console.log("Edit staff clicked", staff);
+                                    startEditStaff(staff);
+                                  }}
+                                  title="Edit Staff Member"
+                                >
+                                  <Edit3 size={16} />
+                                </button>
+                                <button
+                                  className="btn-icon btn-danger"
+                                  onClick={() => {
+                                    console.log("Delete staff clicked", staff.id);
+                                    handleDeleteStaff(staff.id, false);
+                                  }}
+                                  title="Deactivate Staff Member"
+                                  disabled={staff.email === staffInfo?.email}
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="center-block">
+                      <div className="empty-card" style={{margin: '20px'}}>
+                        <Users size={32} color="var(--muted)" />
+                        <p>No staff members found</p>
+                        <p className="muted">Click "Add New Staff" to create the first staff member</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
-            )}
-          </section>
-        )}
-      </main>
+            </div>
+          )}
 
-      {notification && (
-        <div className={`notification ${notification.type}`}>
-          <div className="notification-inner">
-            {notification.type === "error" && <AlertCircle />}
-            {notification.type === "success" && <CheckCircle2 />}
-            {notification.type === "info" && <BarChart3 />}
-            <span className="notification-text">{notification.message}</span>
+          {/* ADMIN: AUDIT LOGS */}
+          {view === "admin" && activeTab === "logs" && (
+            <div className="card-panel">
+              <h2>System Audit Logs</h2>
+              
+              {auditLogs.length > 0 ? (
+                <div className="table-card">
+                  <div className="table-wrap">
+                    <table className="att-table">
+                      <thead>
+                        <tr>
+                          <th>Timestamp</th>
+                          <th>Action</th>
+                          <th>Details</th>
+                          <th>Status</th>
+                          <th>Error</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {auditLogs.map((log, idx) => (
+                          <tr key={idx}>
+                            <td>{new Date(log.created_at).toLocaleString()}</td>
+                            <td>
+                              <span className={`action-badge ${log.action.toLowerCase()}`}>
+                                {log.action}
+                              </span>
+                            </td>
+                            <td>{log.qr_data || '-'}</td>
+                            <td>
+                              <div className="status-indicators">
+                                {log.qr_email_status && (
+                                  <span className={`mini-badge ${log.qr_email_status}`}>
+                                    📧 {log.qr_email_status}
+                                  </span>
+                                )}
+                                {log.qr_whatsapp_status && (
+                                  <span className={`mini-badge ${log.qr_whatsapp_status}`}>
+                                    📱 {log.qr_whatsapp_status}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td>{log.qr_last_error ? (
+                              <span className="error-text" title={log.qr_last_error}>
+                                {log.qr_last_error.substring(0, 50)}...
+                              </span>
+                            ) : '-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <div className="center-block">
+                  <div className="empty-card">
+                    <ClipboardList size={32} color="var(--muted)" />
+                    <p>No audit logs available</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </main>
+
+        {/* Loading overlay */}
+        {isLoading && (
+          <div className="loading-overlay">
+            <div className="spinner"></div>
           </div>
-        </div>
-      )}
-    </div>
-  );
+        )}
+
+        {/* Notification */}
+        {notification && (
+          <div className={`notification ${notification.type}`}>
+            <div className="notification-inner">
+              {notification.type === "success" ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+              <span className="notification-text">{notification.message}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return null;
 };
 
 export default App;
