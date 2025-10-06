@@ -361,6 +361,52 @@ const App = () => {
     }
   };
 
+  const handleExportAttendees = async () => {
+    console.log("Exporting attendees to Excel...");
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/admin/export-attendees`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("Export failed");
+      }
+
+      // Get the blob from response
+      const blob = await response.blob();
+      
+      // Create download link
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      
+      // Get filename from Content-Disposition header or use default
+      const contentDisposition = response.headers.get("Content-Disposition");
+      const filename = contentDisposition
+        ? contentDisposition.split("filename=")[1].replace(/"/g, "")
+        : `attendees_report_${new Date().toISOString().split('T')[0]}.xlsx`;
+      
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      
+      // Cleanup
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      
+      showNotification("Attendees report downloaded successfully!");
+    } catch (err) {
+      console.error("Export error:", err);
+      showNotification(`Failed to export attendees: ${err.message}`, "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   useEffect(() => {
     console.log("Effect triggered:", { view, activeTab });
     if (view === "admin") {
@@ -471,43 +517,6 @@ const App = () => {
 
   // ---- RENDER ----
   console.log("Current view:", view, "Active tab:", activeTab);
-  /*
-
-  if (view === "home") {
-    return (
-      <div className="center-block">
-        <div className="empty-card">
-          <h1 className="brand">Workshop Attendance System</h1>
-          <p className="muted">Choose your login type</p>
-          <div className="form-actions">
-            <button 
-              className="btn-primary" 
-              onClick={() => {
-                console.log("Admin login clicked");
-                setLoginType("admin");
-                setView("login-admin");
-              }}
-            >
-              <Shield className="icon" />
-              Admin Login
-            </button>
-            <button 
-              className="btn-secondary" 
-              onClick={() => {
-                console.log("Staff login clicked");
-                setLoginType("staff");
-                setView("login-staff");
-              }}
-            >
-              <Users className="icon" />
-              Staff Login
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-    */
 
   if (view === "home") {
   return (
@@ -522,7 +531,6 @@ const App = () => {
             width: "100%",     // always fit to screen width
             height: "auto",    // keep aspect ratio
             maxWidth: "100%",
-            
           }}
         />
       </div>
@@ -559,7 +567,6 @@ const App = () => {
     </div>
   );
 }
-
 
 
   if (view === "login-admin" || view === "login-staff") {
@@ -719,40 +726,57 @@ const App = () => {
 
               {/* Regular Dashboard */}
               {dashboardData && (
-                <div className="grid-3">
-                  <div className="card">
-                    <div className="card-left">
-                      <div className="icon-wrap icon-blue">
-                        <Users />
+                <div>
+                  <div className="grid-3">
+                    <div className="card">
+                      <div className="card-left">
+                        <div className="icon-wrap icon-blue">
+                          <Users />
+                        </div>
+                        <div>
+                          <p className="big">{dashboardData.total_attendees}</p>
+                          <p className="muted">Total Registered</p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="big">{dashboardData.total_attendees}</p>
-                        <p className="muted">Total Registered</p>
+                    </div>
+                    <div className="card">
+                      <div className="card-left">
+                        <div className="icon-wrap icon-green">
+                          <CheckCircle2 />
+                        </div>
+                        <div>
+                          <p className="big">{dashboardData.marked_attendance}</p>
+                          <p className="muted">Attended</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="card">
+                      <div className="card-left">
+                        <div className="icon-wrap icon-purple">
+                          <BarChart3 />
+                        </div>
+                        <div>
+                          <p className="big">{dashboardData.attendance_rate}%</p>
+                          <p className="muted">Attendance Rate</p>
+                        </div>
                       </div>
                     </div>
                   </div>
-                  <div className="card">
-                    <div className="card-left">
-                      <div className="icon-wrap icon-green">
-                        <CheckCircle2 />
-                      </div>
-                      <div>
-                        <p className="big">{dashboardData.marked_attendance}</p>
-                        <p className="muted">Attended</p>
-                      </div>
+                  
+                  {/* Export Button for Admin */}
+                  {view === "admin" && dashboardData.total_attendees > 0 && (
+                    <div style={{marginBottom: '16px', textAlign: 'right'}}>
+                      <button 
+                        className="btn-primary"
+                        onClick={handleExportAttendees}
+                        disabled={isLoading}
+                        style={{display: 'inline-flex', alignItems: 'center', gap: '8px'}}
+                      >
+                        <Upload size={16} />
+                        {isLoading ? "Exporting..." : "Export Attendees to Excel"}
+                      </button>
                     </div>
-                  </div>
-                  <div className="card">
-                    <div className="card-left">
-                      <div className="icon-wrap icon-purple">
-                        <BarChart3 />
-                      </div>
-                      <div>
-                        <p className="big">{dashboardData.attendance_rate}%</p>
-                        <p className="muted">Attendance Rate</p>
-                      </div>
-                    </div>
-                  </div>
+                  )}
                 </div>
               )}
 

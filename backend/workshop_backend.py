@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 import httpx
 import pytz
 import bcrypt
+from io import BytesIO
 
 from dotenv import load_dotenv
 
@@ -393,8 +394,7 @@ async def send_entry_pass(att_row, entry_time: datetime) -> bool:
                 {"name": "batch", "value": attendee_batch},
                 {"name": "time", "value": entry_time.astimezone(IST).strftime('%d-%b-%Y %I:%M %p')},
                 {"name": "email", "value": attendee_email},
-              ]
-
+            ]
             wa_ok = await _send_wati_template(
                 phone=phone,
                 template_name=WATI_TEMPLATE_NAME_ENTRY,
@@ -1022,6 +1022,81 @@ async def get_audit_logs(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching audit logs: {str(e)}")
+
+@app.get("/api/admin/export-attendees")
+async def export_attendees_excel(admin_user = Depends(verify_admin_token)):
+    """Export all attendees with attendance status to Excel (Admin only)"""
+    print("[ADMIN] Exporting attendees to Excel")
+    try:
+        async with db_pool.acquire() as conn:
+            # Fetch all attendees with their attendance status
+            rows = await conn.fetch(
+                """SELECT 
+                       a.name,
+                       a.email,
+                       a.mobile as phone,
+                       a.batch,
+                       CASE 
+                           WHEN att.entry_time IS NOT NULL THEN 'P'
+                           ELSE 'A'
+                       END as attendance_status,
+                       att.entry_time
+                   FROM attendees a
+                   LEFT JOIN attendance att ON a.id = att.attendee_id
+                   ORDER BY a.batch, a.name"""
+            )
+        
+        if not rows:
+            raise HTTPException(status_code=404, detail="No attendees found")
+        
+        # Convert to pandas DataFrame
+        data = []
+        for row in rows:
+            data.append({
+                "Name": row["name"],
+                "Email": row["email"],
+                "Phone": row["phone"],
+                "Batch": row["batch"],
+                "A/P": row["attendance_status"],
+                "Entry Time": row["entry_time"].strftime("%Y-%m-%d %H:%M:%S") if row["entry_time"] else "-"
+            })
+        
+        df = pd.DataFrame(data)
+        
+        # Create Excel file in memory
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Attendees')
+            
+            # Auto-adjust column widths
+            worksheet = writer.sheets['Attendees']
+            for idx, col in enumerate(df.columns):
+                max_length = max(
+                    df[col].astype(str).apply(len).max(),
+                    len(col)
+                ) + 2
+                worksheet.column_dimensions[chr(65 + idx)].width = max_length
+        
+        output.seek(0)
+        
+        # Generate filename with current date
+        filename = f"attendees_report_{datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.xlsx"
+        
+        print(f"[ADMIN] Excel export successful: {len(rows)} records")
+        
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ADMIN] Error exporting to Excel: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error exporting attendees: {str(e)}")
 
 # ===================== HEALTH & UTILITY =====================
 
