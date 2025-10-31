@@ -1,10 +1,11 @@
 # workshop_backend.py — Complete FastAPI Backend (User + Admin flows)
-from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr
 from typing import List, Optional
+import json
 
 import os
 import io
@@ -114,6 +115,7 @@ app.add_middleware(
 )
 
 # ===================== AUTH =====================
+'''
 security = HTTPBearer()
 
 def verify_token(auth: HTTPAuthorizationCredentials = Depends(security)):
@@ -121,6 +123,37 @@ def verify_token(auth: HTTPAuthorizationCredentials = Depends(security)):
     token = auth.credentials
     if not token:
         raise HTTPException(status_code=401, detail="Invalid token")
+    return token
+'''
+security = HTTPBearer(auto_error=False)  # <-- important
+
+async def verify_token(
+    request: Request,
+    auth: HTTPAuthorizationCredentials = Depends(security),
+):
+    """
+    Accepts Bearer token from header (normal fetch) OR from query param ?token=...
+    (needed for EventSource/SSE which cannot send custom headers).
+    Returns the raw token string, same as before.
+    """
+    token = None
+
+    # 1) Try Authorization header
+    if auth and auth.scheme and auth.scheme.lower() == "bearer" and auth.credentials:
+        token = auth.credentials
+
+    # 2) Fallback to query param for SSE
+    if not token:
+        token = request.query_params.get("token")
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing token")
+
+    # Optional: validate token maps to an active staff (keeps your existing logic)
+    staff = await get_staff_from_token(token)
+    if not staff:
+        raise HTTPException(status_code=403, detail="Invalid or inactive token")
+
     return token
 
 async def get_staff_from_token(token: str):
@@ -329,7 +362,7 @@ async def send_qr_code(attendee_id: str, attendee: Attendee, qr_code_base64: str
             email_ok = await _send_brevo_email(
                 to_email=attendee.email,
                 subject=f"Workshop QR Code - {attendee.batch}",
-                text=f"Dear {attendee.name},\nYour registration is confirmed.\nBatch: {attendee.batch}\nQR attached.",
+                text=f"Dear {attendee.name},\nYour registration for our upcoming {attendee.batch} Workshop is confirmed.\n Batch: {attendee.batch}\nQR attached.",
                 attachments=attachments
             )
         except Exception as e:
@@ -393,7 +426,7 @@ async def send_entry_pass(att_row, entry_time: datetime) -> bool:
                 {"name": "name", "value": attendee_name},
                 {"name": "batch", "value": attendee_batch},
                 {"name": "time", "value": entry_time.astimezone(IST).strftime('%d-%b-%Y %I:%M %p')},
-                {"name": "email", "value": attendee_email},
+                {"name": "email", "value": attendee_email}
             ]
             wa_ok = await _send_wati_template(
                 phone=phone,
@@ -543,6 +576,16 @@ async def scan_qr(scan_data: QRScanResult, token: str = Depends(verify_token)):
             )
 
         await send_entry_pass(row, entry_time)
+        
+        # Broadcast real-time update
+        await broadcast_attendee_update({
+            "type": "attendance_marked",
+            "attendee_id": str(row["id"]),
+            "name": row["name"],
+            "batch": row["batch"],
+            "entry_time": entry_time.isoformat()
+        })
+        
         return {"message": "Attendance marked successfully",
                 "attendee": {"name": row["name"], "email": row["email"], "mobile": row["mobile"],
                              "batch": row["batch"], "entry_time": entry_time}}
@@ -639,6 +682,158 @@ async def resend_pending(limit: int = 200, token: str = Depends(verify_token)):
     )
     ok = sum(1 for r in results if r is True)
     return {"retried": len(rows), "success": ok, "failed": len(rows)-ok}
+
+# ===================== REAL-TIME ATTENDEE TRACKING =====================
+
+# Store for real-time updates
+attendee_update_queue = asyncio.Queue()
+
+async def broadcast_attendee_update(update_data):
+    """Broadcast attendee updates to all connected clients"""
+    await attendee_update_queue.put(update_data)
+
+@app.get("/api/attendees/live")
+async def get_live_attendees(token: str = Depends(verify_token)):
+    """Get all attendees with real-time status (Staff access)"""
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT 
+                       a.id,
+                       a.name,
+                       a.email,
+                       a.mobile,
+                       a.batch,
+                       CASE WHEN att.entry_time IS NOT NULL THEN 'P' ELSE 'A' END as attendance_status,
+                       att.entry_time,
+                       a.qr_code,
+                       COALESCE(
+                           (SELECT qr_whatsapp_status 
+                            FROM audit_logs 
+                            WHERE attendee_id = a.id 
+                            AND action = 'REGISTER' 
+                            ORDER BY created_at DESC 
+                            LIMIT 1), 
+                           'pending'
+                       ) as qr_whatsapp_status,
+                       COALESCE(
+                           (SELECT qr_email_status 
+                            FROM audit_logs 
+                            WHERE attendee_id = a.id 
+                            AND action = 'REGISTER' 
+                            ORDER BY created_at DESC 
+                            LIMIT 1), 
+                           'pending'
+                       ) as qr_email_status,
+                       COALESCE(
+                           (SELECT qr_whatsapp_status 
+                            FROM audit_logs 
+                            WHERE attendee_id = a.id 
+                            AND action = 'ENTRY' 
+                            ORDER BY created_at DESC 
+                            LIMIT 1), 
+                           'pending'
+                       ) as entry_whatsapp_status,
+                       COALESCE(
+                           (SELECT qr_email_status 
+                            FROM audit_logs 
+                            WHERE attendee_id = a.id 
+                            AND action = 'ENTRY' 
+                            ORDER BY created_at DESC 
+                            LIMIT 1), 
+                           'pending'
+                       ) as entry_email_status
+                   FROM attendees a
+                   LEFT JOIN attendance att ON a.id = att.attendee_id
+                   ORDER BY a.created_at DESC"""
+            )
+        
+        return {
+            "attendees": [
+                {
+                    "id": str(row["id"]),
+                    "name": row["name"],
+                    "email": row["email"],
+                    "mobile": row["mobile"],
+                    "batch": row["batch"],
+                    "attendance_status": row["attendance_status"],
+                    "entry_time": row["entry_time"].isoformat() if row["entry_time"] else None,
+                    "qr_whatsapp_status": row["qr_whatsapp_status"],
+                    "qr_email_status": row["qr_email_status"],
+                    "entry_whatsapp_status": row["entry_whatsapp_status"],
+                    "entry_email_status": row["entry_email_status"]
+                }
+                for row in rows
+            ]
+        }
+    except Exception as e:
+        print(f"[ERROR] Failed to get live attendees: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching attendees: {str(e)}")
+'''
+@app.get("/api/attendees/stream")
+async def stream_attendee_updates(token: str = Depends(verify_token)):
+    """Server-Sent Events stream for real-time attendee updates"""
+    async def event_generator():
+        try:
+            # Send initial connection message
+            yield f"data: {json.dumps({'type': 'connected', 'message': 'Stream connected'})}\n\n"
+            
+            while True:
+                # Wait for update with timeout
+                try:
+                    update = await asyncio.wait_for(attendee_update_queue.get(), timeout=30.0)
+                    yield f"data: {json.dumps(update)}\n\n"
+                except asyncio.TimeoutError:
+                    # Send keepalive ping every 30 seconds
+                    yield f": keepalive\n\n"
+                except Exception as e:
+                    print(f"[SSE] Error in event generator: {e}")
+                    break
+                    
+        except asyncio.CancelledError:
+            print("[SSE] Client disconnected")
+        finally:
+            print("[SSE] Stream closed")
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+'''
+
+@app.get("/api/attendees/stream")
+async def stream_attendee_updates(token: str = Depends(verify_token)):
+    # optional: also check role from token if you need
+    # staff = await get_staff_from_token(token)
+    # if staff["role"] not in ("admin","staff"): raise HTTPException(403, "Not allowed")
+
+    async def event_generator():
+        try:
+            yield "data: " + json.dumps({"type": "connected"}) + "\n\n"
+            while True:
+                try:
+                    update = await asyncio.wait_for(attendee_update_queue.get(), timeout=30.0)
+                    yield "data: " + json.dumps(update) + "\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 
 # ===================== ADMIN FLOW APIs =====================
 
