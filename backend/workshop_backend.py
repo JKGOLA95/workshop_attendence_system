@@ -362,7 +362,7 @@ async def send_qr_code(attendee_id: str, attendee: Attendee, qr_code_base64: str
             email_ok = await _send_brevo_email(
                 to_email=attendee.email,
                 subject=f"Workshop QR Code - {attendee.batch}",
-                text=f"Dear {attendee.name},\nYour registration for our upcoming {attendee.batch} Workshop is confirmed.\n Batch: {attendee.batch}\nQR attached.",
+                text=f"Dear {attendee.name},\nYour registration for our upcoming {attendee.batch} Workshop has been confirmed.\n  Show this QR code to BCI staff to get your ENTRY PASS.\n\nNote: Please save this QR code before your visit to avoid any inconvenience \nwhen getting your entry pass.\n Batch: {attendee.batch}\nQR attached.\nThank you! \nTeam BCI",
                 attachments=attachments
             )
         except Exception as e:
@@ -414,7 +414,7 @@ async def send_entry_pass(att_row, entry_time: datetime) -> bool:
         email_ok = await _send_brevo_email(
             to_email=attendee_email,
             subject=f"Entry Confirmed - {attendee_batch}",
-            text=f"Dear {attendee_name},\nYour entry at {entry_time.astimezone(IST).strftime('%d-%b-%Y %I:%M %p IST')} is confirmed.\nEnjoy the workshop!"
+            text=f"Welcome {attendee_name},\n\nThis is your ENTRY PASS for today {attendee_batch} workshop at {entry_time.astimezone(IST).strftime('%d-%b-%Y %I:%M %p IST')}.\nEnjoy the workshop! \nThanku you! \nTeam BCI"
         )
     except Exception as e:
         last_err = f"Brevo entry email error: {e}"
